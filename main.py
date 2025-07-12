@@ -21,19 +21,14 @@ def test_binance_access():
     """Test if Binance API is accessible from current region"""
     try:
         response = requests.get("https://api.binance.com/api/v3/ping", timeout=5)
-        return response.status_code == 200
-    except:
-        return False
+        return response.status_code == 200, response.status_code
+    except Exception as e:
+        return False, str(e)
 
 def fetch_data():
     """Fetch live data from Binance API"""
     try:
         with st.spinner("Fetching live Binance data..."):
-            # Test connectivity first
-            if not test_binance_access():
-                st.error("Binance API not accessible from this region")
-                return False
-            
             response = requests.get("https://api.binance.com/api/v3/ticker/24hr", timeout=10)
             response.raise_for_status()
             data = response.json()
@@ -87,31 +82,36 @@ def calculate_opportunities():
     return pd.DataFrame(opportunities).sort_values('Profit', key=lambda x: x.str.replace('%', '').astype(float), ascending=False)
 
 # Main UI
-st.title("📊 Binance USDT Tracker")
-st.markdown("**Testing Railway US region deployment**")
+st.title("Binance USDT Tracker")
+st.markdown("**Railway Amsterdam region deployment**")
 
 # API connectivity test
-if st.button("🔍 Test API Access"):
-    if test_binance_access():
-        st.success("✅ Binance API accessible from this region!")
-    else:
-        st.error("❌ Binance API blocked from this region")
+col1, col2 = st.columns(2)
 
-# Fetch button
-if st.button("🔄 Get Live Data", type="primary"):
-    if fetch_data():
-        st.success(f"Loaded {len(st.session_state.data)} USDT pairs!")
-        st.rerun()
+with col1:
+    if st.button("Test API Access"):
+        success, result = test_binance_access()
+        if success:
+            st.success(f"✅ Binance API accessible! Status: {result}")
+        else:
+            st.error(f"❌ Binance API blocked. Error: {result}")
+
+with col2:
+    if st.button("Get Live Data", type="primary"):
+        if fetch_data():
+            st.success(f"Loaded {len(st.session_state.data)} USDT pairs!")
+            st.rerun()
 
 # Status
 if st.session_state.last_fetch:
     st.success(f"✅ Data loaded at {st.session_state.last_fetch.strftime('%H:%M:%S')}")
+    st.info(f"Tracking {len(st.session_state.data)} USDT pairs")
 else:
     st.info("Click 'Get Live Data' to fetch from Binance API")
 
 # Results
 if st.session_state.data:
-    st.subheader("🎯 Profit Opportunities")
+    st.subheader("Profit Opportunities")
     st.text("Coins with ~8% profit margin and <2% above low price")
     
     df = calculate_opportunities()
@@ -120,10 +120,6 @@ if st.session_state.data:
         st.success(f"Found {len(df)} opportunities!")
     else:
         st.info("No opportunities match criteria")
-    
-    st.text(f"Total USDT pairs: {len(st.session_state.data)}")
-else:
-    st.info("No data loaded yet")
 
 st.markdown("---")
-st.markdown("*Testing Railway US region deployment with live Binance API*")
+st.markdown("*Testing Railway Amsterdam region with live Binance API*")
