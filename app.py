@@ -1,5 +1,5 @@
 import streamlit as st
-import websocket
+import requests
 import json
 import threading
 import time
@@ -8,85 +8,72 @@ from datetime import datetime
 
 # Set page configuration
 st.set_page_config(
-    page_title="Binance USDT Tracker",
-    page_icon="📊",
-    layout="wide"
+    page_title=\"Binance USDT Tracker\",
+    page_icon=\"📊\",
+    layout=\"wide\"
 )
 
 # Global variables
-ws = None
 ticker_data = {}
-is_connected = False
-ws_thread = None
+is_fetching = False
+fetch_thread = None
 
-def on_message(ws, message):
-    \"\"\"Handle incoming WebSocket messages\"\"\"
-    global ticker_data
+def fetch_binance_data():
+    \"\"\"Fetch ticker data from Binance REST API\"\"\"
+    global ticker_data, is_fetching
+    
     try:
-        data = json.loads(message)
-        if isinstance(data, list):
-            for item in data:
-                if 's' in item and item['s'].endswith('USDT'):
-                    ticker_data[item['s']] = {
-                        'current_price': float(item['c']),
-                        'high_price': float(item['h']),
-                        'low_price': float(item['l']),
-                        'price_change_percent': float(item['P']),
-                        'timestamp': datetime.now()
-                    }
-        elif isinstance(data, dict) and 's' in data and data['s'].endswith('USDT'):
-            ticker_data[data['s']] = {
-                'current_price': float(data['c']),
-                'high_price': float(data['h']),
-                'low_price': float(data['l']),
-                'price_change_percent': float(data['P']),
-                'timestamp': datetime.now()
-            }
+        response = requests.get(
+            \"https://api.binance.com/api/v3/ticker/24hr\",
+            timeout=10
+        )
+        response.raise_for_status()
+        data = response.json()
+        
+        # Filter USDT pairs and update ticker_data
+        new_ticker_data = {}
+        for item in data:
+            if item['symbol'].endswith('USDT'):
+                new_ticker_data[item['symbol']] = {
+                    'current_price': float(item['lastPrice']),
+                    'high_price': float(item['highPrice']),
+                    'low_price': float(item['lowPrice']),
+                    'price_change_percent': float(item['priceChangePercent']),
+                    'timestamp': datetime.now()
+                }
+        
+        ticker_data = new_ticker_data
+        return True
+        
+    except requests.exceptions.RequestException as e:
+        st.error(f\"API request failed: {e}\")
+        return False
     except Exception as e:
-        st.error(f\"Error processing message: {e}\")
+        st.error(f\"Data processing error: {e}\")
+        return False
 
-def on_error(ws, error):
-    \"\"\"Handle WebSocket errors\"\"\"
-    st.error(f\"WebSocket error: {error}\")
-
-def on_close(ws, close_status_code, close_msg):
-    \"\"\"Handle WebSocket close\"\"\"
-    global is_connected
-    is_connected = False
-    st.info(\"WebSocket connection closed\")
-
-def on_open(ws):
-    \"\"\"Handle WebSocket open\"\"\"
-    global is_connected
-    is_connected = True
-    st.success(\"WebSocket connected to Binance!\")
-
-def start_websocket():
-    \"\"\"Start the WebSocket connection\"\"\"
-    global ws, is_connected, ws_thread
+def start_data_fetching():
+    \"\"\"Start periodic data fetching\"\"\"
+    global is_fetching, fetch_thread
     
-    if ws is not None:
-        ws.close()
+    if is_fetching:
+        return
+        
+    is_fetching = True
     
-    ws = websocket.WebSocketApp(
-        \"wss://stream.binance.com:9443/ws/!ticker@arr\",
-        on_message=on_message,
-        on_error=on_error,
-        on_close=on_close,
-        on_open=on_open
-    )
+    def fetch_loop():
+        while is_fetching:
+            fetch_binance_data()
+            time.sleep(5)  # Fetch every 5 seconds
     
-    ws_thread = threading.Thread(target=ws.run_forever)
-    ws_thread.daemon = True
-    ws_thread.start()
+    fetch_thread = threading.Thread(target=fetch_loop)
+    fetch_thread.daemon = True
+    fetch_thread.start()
 
-def stop_websocket():
-    \"\"\"Stop the WebSocket connection\"\"\"
-    global ws, is_connected
-    if ws:
-        ws.close()
-        ws = None
-    is_connected = False
+def stop_data_fetching():
+    \"\"\"Stop data fetching\"\"\"
+    global is_fetching
+    is_fetching = False
 
 def calculate_profit_opportunities():
     \"\"\"Calculate profit opportunities from ticker data\"\"\"
@@ -123,26 +110,35 @@ def calculate_profit_opportunities():
 
 # Main Streamlit UI
 st.title(\"Binance USDT Tracker\")
-st.markdown(\"Real-time cryptocurrency analysis with WebSocket connection\")
+st.markdown(\"Real-time cryptocurrency analysis using Binance REST API\")
 
-# WebSocket controls
+# Data fetching controls
 col1, col2 = st.columns(2)
 
 with col1:
-    if st.button(\"Start Connection\"):
-        start_websocket()
+    if st.button(\"Start Live Data\"):
+        start_data_fetching()
         st.rerun()
 
 with col2:
-    if st.button(\"Stop Connection\"):
-        stop_websocket()
+    if st.button(\"Stop Data\"):
+        stop_data_fetching()
         st.rerun()
 
 # Connection status
-if is_connected:
-    st.success(\"🟢 Connected to Binance WebSocket\")
+if is_fetching:
+    st.success(\"🟢 Fetching live data from Binance API\")
 else:
-    st.error(\"🔴 Not connected to Binance\")
+    st.error(\"🔴 Not fetching data\")
+
+# Manual refresh button
+if st.button(\"Refresh Data Now\"):
+    with st.spinner(\"Fetching latest data...\"):
+        if fetch_binance_data():
+            st.success(\"Data updated successfully!\")
+        else:
+            st.error(\"Failed to fetch data\")
+    st.rerun()
 
 # Data display
 st.subheader(\"Profit Opportunities\")
@@ -163,9 +159,9 @@ if ticker_data:
         latest_time = max(data['timestamp'] for data in ticker_data.values())
         st.text(f\"Last update: {latest_time.strftime('%H:%M:%S')}\")
 else:
-    st.info(\"No data available. Click 'Start Connection' to begin tracking.\")
+    st.info(\"No data available. Click 'Start Live Data' to begin tracking.\")
 
-# Auto-refresh every 2 seconds when connected
-if is_connected:
-    time.sleep(2)
+# Auto-refresh every 10 seconds when fetching
+if is_fetching:
+    time.sleep(10)
     st.rerun()
