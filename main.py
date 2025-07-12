@@ -2,9 +2,7 @@ import streamlit as st
 import json
 import pandas as pd
 from datetime import datetime
-import asyncio
-import websockets
-import threading
+import requests
 import time
 
 # Page config
@@ -17,90 +15,38 @@ st.set_page_config(
 # Initialize session state
 if 'ticker_data' not in st.session_state:
     st.session_state.ticker_data = {}
-if 'ws_connected' not in st.session_state:
-    st.session_state.ws_connected = False
 if 'last_update' not in st.session_state:
     st.session_state.last_update = None
-if 'connection_status' not in st.session_state:
-    st.session_state.connection_status = "disconnected"
-if 'stop_ws' not in st.session_state:
-    st.session_state.stop_ws = False
+if 'auto_refresh' not in st.session_state:
+    st.session_state.auto_refresh = False
 
-def update_ticker_data(data):
-    """Update ticker data in session state"""
-    if isinstance(data, list):
-        ticker_data = {}
+def fetch_ticker_data():
+    """Fetch ticker data from Binance API"""
+    try:
+        response = requests.get("https://api.binance.com/api/v3/ticker/24hr", timeout=10)
+        response.raise_for_status()
+        data = response.json()
+        
+        # Filter USDT pairs
+        usdt_data = {}
         for item in data:
-            if 's' in item and item['s'].endswith('USDT'):
+            if item['symbol'].endswith('USDT'):
                 try:
-                    ticker_data[item['s']] = {
-                        'current': float(item['c']),
-                        'high': float(item['h']),
-                        'low': float(item['l']),
-                        'change': float(item['P'])
+                    usdt_data[item['symbol']] = {
+                        'current': float(item['lastPrice']),
+                        'high': float(item['highPrice']),
+                        'low': float(item['lowPrice']),
+                        'change': float(item['priceChangePercent'])
                     }
                 except (ValueError, KeyError):
                     continue
         
-        st.session_state.ticker_data = ticker_data
+        st.session_state.ticker_data = usdt_data
         st.session_state.last_update = datetime.now()
-        st.session_state.ws_connected = True
-        st.session_state.connection_status = "connected"
-
-async def websocket_handler():
-    """Handle WebSocket connection"""
-    uri = "wss://stream.binance.com:9443/ws/!ticker@arr"
-    
-    try:
-        async with websockets.connect(uri, ping_interval=20, ping_timeout=10) as websocket:
-            st.session_state.connection_status = "connected"
-            st.session_state.ws_connected = True
-            
-            while not st.session_state.stop_ws:
-                try:
-                    message = await asyncio.wait_for(websocket.recv(), timeout=2.0)
-                    data = json.loads(message)
-                    update_ticker_data(data)
-                except asyncio.TimeoutError:
-                    continue
-                except websockets.exceptions.ConnectionClosed:
-                    break
-                except Exception as e:
-                    break
-                    
+        return True, len(usdt_data)
+        
     except Exception as e:
-        st.session_state.connection_status = f"error: {str(e)[:50]}"
-    finally:
-        st.session_state.ws_connected = False
-        if not st.session_state.stop_ws:
-            st.session_state.connection_status = "disconnected"
-
-def start_websocket():
-    """Start WebSocket connection"""
-    if st.session_state.ws_connected:
-        return
-    
-    st.session_state.stop_ws = False
-    st.session_state.connection_status = "connecting"
-    
-    def run_websocket():
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            loop.run_until_complete(websocket_handler())
-        except Exception as e:
-            st.session_state.connection_status = f"failed: {str(e)[:50]}"
-        finally:
-            loop.close()
-    
-    thread = threading.Thread(target=run_websocket, daemon=True)
-    thread.start()
-
-def stop_websocket():
-    """Stop WebSocket connection"""
-    st.session_state.stop_ws = True
-    st.session_state.ws_connected = False
-    st.session_state.connection_status = "disconnected"
+        return False, str(e)
 
 def calculate_opportunities():
     """Calculate profit opportunities"""
@@ -140,45 +86,40 @@ def calculate_opportunities():
 
 # Main UI
 st.title("Binance USDT Tracker")
-st.markdown("**WebSocket-only real-time streaming**")
+st.markdown("**Live data from Amsterdam region**")
 
-# Connection controls
+# Controls
 col1, col2 = st.columns(2)
 
 with col1:
-    if st.button("Start WebSocket", type="primary", disabled=st.session_state.ws_connected):
-        start_websocket()
-        time.sleep(1)
+    if st.button("Get Live Data", type="primary"):
+        with st.spinner("Fetching USDT pairs..."):
+            success, result = fetch_ticker_data()
+            if success:
+                st.success(f"Loaded {result} USDT pairs!")
+            else:
+                st.error(f"Error: {result}")
         st.rerun()
 
 with col2:
-    if st.button("Stop WebSocket", disabled=not st.session_state.ws_connected):
-        stop_websocket()
-        st.rerun()
+    st.session_state.auto_refresh = st.checkbox("Auto-refresh (30s)", value=st.session_state.auto_refresh)
 
-# Connection status
-status = st.session_state.connection_status
-if status == "connected":
-    st.success("🟢 Live data streaming")
-elif status == "connecting":
-    st.info("🟡 Connecting to WebSocket...")
-elif status.startswith("error") or status.startswith("failed"):
-    st.error(f"🔴 Connection failed: {status}")
-else:
-    st.error("🔴 WebSocket disconnected")
-
-# Data status
+# Status
 if st.session_state.last_update:
     age = datetime.now() - st.session_state.last_update
     age_seconds = int(age.total_seconds())
-    st.info(f"📊 Last update: {age_seconds}s ago | {len(st.session_state.ticker_data)} USDT pairs")
+    st.success(f"📊 Data loaded: {age_seconds}s ago | {len(st.session_state.ticker_data)} USDT pairs")
 else:
-    st.info("💡 Click 'Start WebSocket' to begin streaming")
+    st.info("💡 Click 'Get Live Data' to fetch from Binance API")
 
-# Auto-refresh when connected
-if st.session_state.ws_connected:
-    time.sleep(2)
-    st.rerun()
+# Auto-refresh logic
+if st.session_state.auto_refresh and st.session_state.last_update:
+    age = datetime.now() - st.session_state.last_update
+    if age.total_seconds() >= 30:
+        st.info("🔄 Auto-refreshing...")
+        success, result = fetch_ticker_data()
+        if success:
+            st.rerun()
 
 # Results
 if st.session_state.ticker_data:
@@ -192,5 +133,16 @@ if st.session_state.ticker_data:
     else:
         st.info("🔍 No opportunities match criteria")
 
+# Manual refresh
+if st.session_state.ticker_data:
+    if st.button("🔄 Refresh Now"):
+        with st.spinner("Refreshing..."):
+            success, result = fetch_ticker_data()
+            if success:
+                st.success("Data refreshed!")
+            else:
+                st.error(f"Error: {result}")
+        st.rerun()
+
 st.markdown("---")
-st.markdown("*WebSocket-only streaming - Fixed connection handling*")
+st.markdown("*Single API call - Production stable*")
