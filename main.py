@@ -29,7 +29,7 @@ if 'last_update' not in st.session_state:
     st.session_state.last_update = None
 
 def process_ticker_data(data):
-    \"\"\"Process incoming ticker data\"\"\"
+    """Process incoming ticker data"""
     global ticker_data
     
     if isinstance(data, list):
@@ -47,7 +47,7 @@ def process_ticker_data(data):
     st.session_state.last_update = datetime.now()
 
 async def websocket_client():
-    \"\"\"WebSocket client for Binance stream\"\"\"
+    """WebSocket client for Binance stream"""
     global ws_connected, stop_ws
     
     uri = "wss://stream.binance.com:9443/ws/!ticker@arr"
@@ -74,7 +74,7 @@ async def websocket_client():
         st.session_state.ws_connected = False
 
 def start_websocket():
-    \"\"\"Start WebSocket connection\"\"\"
+    """Start WebSocket connection"""
     global ws_thread, stop_ws
     
     stop_ws = False
@@ -90,14 +90,14 @@ def start_websocket():
     ws_thread.start()
 
 def stop_websocket():
-    \"\"\"Stop WebSocket connection\"\"\"
+    """Stop WebSocket connection"""
     global stop_ws, ws_connected
     stop_ws = True
     ws_connected = False
     st.session_state.ws_connected = False
 
 def calculate_opportunities():
-    \"\"\"Calculate profit opportunities with error handling\"\"\"
+    """Calculate profit opportunities with error handling"""
     if not st.session_state.ticker_data:
         return pd.DataFrame()
     
