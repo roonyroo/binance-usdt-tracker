@@ -23,83 +23,87 @@ if 'last_update' not in st.session_state:
     st.session_state.last_update = None
 if 'connection_status' not in st.session_state:
     st.session_state.connection_status = "disconnected"
-if 'ws_thread' not in st.session_state:
-    st.session_state.ws_thread = None
 if 'stop_ws' not in st.session_state:
     st.session_state.stop_ws = False
 
-def process_ticker_data(data):
-    """Process incoming ticker data"""
+def update_ticker_data(data):
+    """Update ticker data in session state"""
     if isinstance(data, list):
         ticker_data = {}
         for item in data:
             if 's' in item and item['s'].endswith('USDT'):
-                ticker_data[item['s']] = {
-                    'current': float(item['c']),
-                    'high': float(item['h']),
-                    'low': float(item['l']),
-                    'change': float(item['P'])
-                }
+                try:
+                    ticker_data[item['s']] = {
+                        'current': float(item['c']),
+                        'high': float(item['h']),
+                        'low': float(item['l']),
+                        'change': float(item['P'])
+                    }
+                except (ValueError, KeyError):
+                    continue
         
-        # Update session state
         st.session_state.ticker_data = ticker_data
         st.session_state.last_update = datetime.now()
+        st.session_state.ws_connected = True
+        st.session_state.connection_status = "connected"
 
-async def websocket_client():
-    """WebSocket client for Binance stream"""
+async def websocket_handler():
+    """Handle WebSocket connection"""
     uri = "wss://stream.binance.com:9443/ws/!ticker@arr"
     
     try:
-        st.session_state.connection_status = "connecting"
-        async with websockets.connect(uri) as websocket:
-            st.session_state.ws_connected = True
+        async with websockets.connect(uri, ping_interval=20, ping_timeout=10) as websocket:
             st.session_state.connection_status = "connected"
+            st.session_state.ws_connected = True
             
             while not st.session_state.stop_ws:
                 try:
-                    message = await asyncio.wait_for(websocket.recv(), timeout=1.0)
+                    message = await asyncio.wait_for(websocket.recv(), timeout=2.0)
                     data = json.loads(message)
-                    process_ticker_data(data)
+                    update_ticker_data(data)
                 except asyncio.TimeoutError:
                     continue
+                except websockets.exceptions.ConnectionClosed:
+                    break
                 except Exception as e:
                     break
                     
     except Exception as e:
-        st.session_state.connection_status = f"error: {str(e)}"
+        st.session_state.connection_status = f"error: {str(e)[:50]}"
     finally:
         st.session_state.ws_connected = False
-        st.session_state.connection_status = "disconnected"
+        if not st.session_state.stop_ws:
+            st.session_state.connection_status = "disconnected"
 
 def start_websocket():
     """Start WebSocket connection"""
     if st.session_state.ws_connected:
-        return  # Already connected
+        return
     
     st.session_state.stop_ws = False
-    st.session_state.connection_status = "starting"
+    st.session_state.connection_status = "connecting"
     
     def run_websocket():
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         try:
-            loop.run_until_complete(websocket_client())
+            loop.run_until_complete(websocket_handler())
+        except Exception as e:
+            st.session_state.connection_status = f"failed: {str(e)[:50]}"
         finally:
             loop.close()
     
-    thread = threading.Thread(target=run_websocket)
-    thread.daemon = True
+    thread = threading.Thread(target=run_websocket, daemon=True)
     thread.start()
-    st.session_state.ws_thread = thread
 
 def stop_websocket():
     """Stop WebSocket connection"""
     st.session_state.stop_ws = True
     st.session_state.ws_connected = False
-    st.session_state.connection_status = "stopping"
+    st.session_state.connection_status = "disconnected"
 
 def calculate_opportunities():
-    """Calculate profit opportunities with error handling"""
+    """Calculate profit opportunities"""
     if not st.session_state.ticker_data:
         return pd.DataFrame()
     
@@ -109,21 +113,16 @@ def calculate_opportunities():
         high = data['high']
         low = data['low']
         
-        # Skip if any price is 0 or negative
-        if low <= 0 or high <= 0 or current <= 0:
-            continue
-            
-        # Skip if high is less than low (data error)
-        if high < low:
+        # Skip invalid data
+        if low <= 0 or high <= 0 or current <= 0 or high < low:
             continue
             
         try:
-            # Calculate percentages
             ld_percent = ((current - low) / low) * 100
             hd_percent = ((high - current) / current) * 100
             profit_percent = ((high - low) / low) * 100
             
-            # Filter: ~8% profit margin AND <2% above low
+            # Filter: 7%+ profit margin AND <2% above low
             if profit_percent >= 7 and ld_percent <= 2:
                 opportunities.append({
                     'Symbol': symbol,
@@ -134,7 +133,10 @@ def calculate_opportunities():
         except (ZeroDivisionError, ValueError):
             continue
     
-    return pd.DataFrame(opportunities).sort_values('Profit', key=lambda x: x.str.replace('%', '').astype(float), ascending=False)
+    if opportunities:
+        df = pd.DataFrame(opportunities)
+        return df.sort_values('Profit', key=lambda x: x.str.replace('%', '').astype(float), ascending=False)
+    return pd.DataFrame()
 
 # Main UI
 st.title("Binance USDT Tracker")
@@ -146,25 +148,26 @@ col1, col2 = st.columns(2)
 with col1:
     if st.button("Start WebSocket", type="primary", disabled=st.session_state.ws_connected):
         start_websocket()
+        time.sleep(1)
+        st.rerun()
 
 with col2:
     if st.button("Stop WebSocket", disabled=not st.session_state.ws_connected):
         stop_websocket()
+        st.rerun()
 
-# Connection status with better feedback
+# Connection status
 status = st.session_state.connection_status
 if status == "connected":
     st.success("🟢 Live data streaming")
-elif status == "connecting" or status == "starting":
+elif status == "connecting":
     st.info("🟡 Connecting to WebSocket...")
-elif status == "stopping":
-    st.info("🟡 Disconnecting...")
-elif status.startswith("error"):
-    st.error(f"🔴 Connection error: {status}")
+elif status.startswith("error") or status.startswith("failed"):
+    st.error(f"🔴 Connection failed: {status}")
 else:
     st.error("🔴 WebSocket disconnected")
 
-# Status display
+# Data status
 if st.session_state.last_update:
     age = datetime.now() - st.session_state.last_update
     age_seconds = int(age.total_seconds())
@@ -172,19 +175,10 @@ if st.session_state.last_update:
 else:
     st.info("💡 Click 'Start WebSocket' to begin streaming")
 
-# Auto-refresh only if connected and has data
-if st.session_state.ws_connected and st.session_state.ticker_data:
-    # Use a much shorter sleep and only refresh if there's new data
-    placeholder = st.empty()
-    with placeholder.container():
-        st.text("🔄 Auto-refreshing... (live data)")
-    
-    # Non-blocking refresh
-    if st.session_state.last_update:
-        age = datetime.now() - st.session_state.last_update
-        if age.total_seconds() < 30:  # Only auto-refresh if data is fresh
-            time.sleep(1)
-            st.rerun()
+# Auto-refresh when connected
+if st.session_state.ws_connected:
+    time.sleep(2)
+    st.rerun()
 
 # Results
 if st.session_state.ticker_data:
@@ -198,10 +192,5 @@ if st.session_state.ticker_data:
     else:
         st.info("🔍 No opportunities match criteria")
 
-# Manual refresh button
-if st.session_state.ws_connected:
-    if st.button("🔄 Refresh Display"):
-        st.rerun()
-
 st.markdown("---")
-st.markdown("*WebSocket-only streaming with improved connection handling*")
+st.markdown("*WebSocket-only streaming - Fixed connection handling*")
