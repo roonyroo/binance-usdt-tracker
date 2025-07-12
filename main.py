@@ -29,7 +29,7 @@ if 'last_update' not in st.session_state:
     st.session_state.last_update = None
 
 def process_ticker_data(data):
-    """Process incoming ticker data"""
+    \"\"\"Process incoming ticker data\"\"\"
     global ticker_data
     
     if isinstance(data, list):
@@ -47,7 +47,7 @@ def process_ticker_data(data):
     st.session_state.last_update = datetime.now()
 
 async def websocket_client():
-    """WebSocket client for Binance stream"""
+    \"\"\"WebSocket client for Binance stream\"\"\"
     global ws_connected, stop_ws
     
     uri = "wss://stream.binance.com:9443/ws/!ticker@arr"
@@ -74,7 +74,7 @@ async def websocket_client():
         st.session_state.ws_connected = False
 
 def start_websocket():
-    """Start WebSocket connection"""
+    \"\"\"Start WebSocket connection\"\"\"
     global ws_thread, stop_ws
     
     stop_ws = False
@@ -90,14 +90,14 @@ def start_websocket():
     ws_thread.start()
 
 def stop_websocket():
-    """Stop WebSocket connection"""
+    \"\"\"Stop WebSocket connection\"\"\"
     global stop_ws, ws_connected
     stop_ws = True
     ws_connected = False
     st.session_state.ws_connected = False
 
 def calculate_opportunities():
-    """Calculate profit opportunities"""
+    \"\"\"Calculate profit opportunities with error handling\"\"\"
     if not st.session_state.ticker_data:
         return pd.DataFrame()
     
@@ -107,19 +107,31 @@ def calculate_opportunities():
         high = data['high']
         low = data['low']
         
-        # Calculate percentages
-        ld_percent = ((current - low) / low) * 100
-        hd_percent = ((high - current) / current) * 100
-        profit_percent = ((high - low) / low) * 100
-        
-        # Filter: ~8% profit margin AND <2% above low
-        if profit_percent >= 7 and ld_percent <= 2:
-            opportunities.append({
-                'Symbol': symbol,
-                'LD': f"{ld_percent:.1f}%",
-                'HD': f"{hd_percent:.1f}%",
-                'Profit': f"{profit_percent:.1f}%"
-            })
+        # Skip if any price is 0 or negative
+        if low <= 0 or high <= 0 or current <= 0:
+            continue
+            
+        # Skip if high is less than low (data error)
+        if high < low:
+            continue
+            
+        try:
+            # Calculate percentages
+            ld_percent = ((current - low) / low) * 100
+            hd_percent = ((high - current) / current) * 100
+            profit_percent = ((high - low) / low) * 100
+            
+            # Filter: ~8% profit margin AND <2% above low
+            if profit_percent >= 7 and ld_percent <= 2:
+                opportunities.append({
+                    'Symbol': symbol,
+                    'LD': f"{ld_percent:.1f}%",
+                    'HD': f"{hd_percent:.1f}%",
+                    'Profit': f"{profit_percent:.1f}%"
+                })
+        except (ZeroDivisionError, ValueError):
+            # Skip invalid data
+            continue
     
     return pd.DataFrame(opportunities).sort_values('Profit', key=lambda x: x.str.replace('%', '').astype(float), ascending=False)
 
@@ -175,4 +187,4 @@ if st.session_state.ticker_data:
         st.info("No opportunities match criteria")
 
 st.markdown("---")
-st.markdown("*WebSocket-only streaming - No REST calls*")
+st.markdown("*WebSocket-only streaming - Error handling included*")
