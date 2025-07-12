@@ -1,7 +1,11 @@
 import streamlit as st
-import requests
+import json
 import pandas as pd
 from datetime import datetime
+import asyncio
+import websockets
+import threading
+import time
 
 # Page config
 st.set_page_config(
@@ -10,44 +14,95 @@ st.set_page_config(
     layout="wide"
 )
 
-# Initialize session state
-if 'data' not in st.session_state:
-    st.session_state.data = {}
-if 'last_fetch' not in st.session_state:
-    st.session_state.last_fetch = None
+# Global variables
+ticker_data = {}
+ws_connected = False
+ws_thread = None
+stop_ws = False
 
-def fetch_binance_data():
-    """Single REST API call to get all USDT pairs"""
-    try:
-        response = requests.get("https://api.binance.com/api/v3/ticker/24hr", timeout=10)
-        response.raise_for_status()
-        data = response.json()
-        
-        # Filter USDT pairs in single loop
-        usdt_data = {}
+# Initialize session state
+if 'ticker_data' not in st.session_state:
+    st.session_state.ticker_data = {}
+if 'ws_connected' not in st.session_state:
+    st.session_state.ws_connected = False
+if 'last_update' not in st.session_state:
+    st.session_state.last_update = None
+
+def process_ticker_data(data):
+    """Process incoming ticker data"""
+    global ticker_data
+    
+    if isinstance(data, list):
         for item in data:
-            if item['symbol'].endswith('USDT'):
-                usdt_data[item['symbol']] = {
-                    'current': float(item['lastPrice']),
-                    'high': float(item['highPrice']),
-                    'low': float(item['lowPrice']),
-                    'change': float(item['priceChangePercent'])
+            if 's' in item and item['s'].endswith('USDT'):
+                ticker_data[item['s']] = {
+                    'current': float(item['c']),
+                    'high': float(item['h']),
+                    'low': float(item['l']),
+                    'change': float(item['P'])
                 }
-        
-        st.session_state.data = usdt_data
-        st.session_state.last_fetch = datetime.now()
-        return True, len(usdt_data)
-        
+    
+    # Update session state
+    st.session_state.ticker_data = ticker_data.copy()
+    st.session_state.last_update = datetime.now()
+
+async def websocket_client():
+    """WebSocket client for Binance stream"""
+    global ws_connected, stop_ws
+    
+    uri = "wss://stream.binance.com:9443/ws/!ticker@arr"
+    
+    try:
+        async with websockets.connect(uri) as websocket:
+            ws_connected = True
+            st.session_state.ws_connected = True
+            
+            while not stop_ws:
+                try:
+                    message = await asyncio.wait_for(websocket.recv(), timeout=1.0)
+                    data = json.loads(message)
+                    process_ticker_data(data)
+                except asyncio.TimeoutError:
+                    continue
+                except Exception as e:
+                    break
+                    
     except Exception as e:
-        return False, str(e)
+        pass
+    finally:
+        ws_connected = False
+        st.session_state.ws_connected = False
+
+def start_websocket():
+    """Start WebSocket connection"""
+    global ws_thread, stop_ws
+    
+    stop_ws = False
+    
+    def run_websocket():
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(websocket_client())
+        loop.close()
+    
+    ws_thread = threading.Thread(target=run_websocket)
+    ws_thread.daemon = True
+    ws_thread.start()
+
+def stop_websocket():
+    """Stop WebSocket connection"""
+    global stop_ws, ws_connected
+    stop_ws = True
+    ws_connected = False
+    st.session_state.ws_connected = False
 
 def calculate_opportunities():
     """Calculate profit opportunities"""
-    if not st.session_state.data:
+    if not st.session_state.ticker_data:
         return pd.DataFrame()
     
     opportunities = []
-    for symbol, data in st.session_state.data.items():
+    for symbol, data in st.session_state.ticker_data.items():
         current = data['current']
         high = data['high']
         low = data['low']
@@ -70,27 +125,45 @@ def calculate_opportunities():
 
 # Main UI
 st.title("Binance USDT Tracker")
-st.markdown("**Single REST API call - Amsterdam region**")
+st.markdown("**WebSocket-only real-time streaming**")
 
-# Single fetch button
-if st.button("Get Live Data", type="primary"):
-    with st.spinner("Fetching all USDT pairs..."):
-        success, result = fetch_binance_data()
-        if success:
-            st.success(f"Loaded {result} USDT pairs!")
-        else:
-            st.error(f"Error: {result}")
+# Connection controls
+col1, col2 = st.columns(2)
+
+with col1:
+    if st.button("Start WebSocket", type="primary"):
+        start_websocket()
+        st.success("WebSocket started!")
+        time.sleep(2)
+        st.rerun()
+
+with col2:
+    if st.button("Stop WebSocket"):
+        stop_websocket()
+        st.success("WebSocket stopped!")
+        st.rerun()
+
+# Connection status
+if st.session_state.ws_connected:
+    st.success("Live data streaming")
+else:
+    st.error("WebSocket disconnected")
+
+# Status display
+if st.session_state.last_update:
+    age = datetime.now() - st.session_state.last_update
+    age_seconds = int(age.total_seconds())
+    st.info(f"Last update: {age_seconds}s ago | {len(st.session_state.ticker_data)} USDT pairs")
+else:
+    st.info("Click 'Start WebSocket' to begin streaming")
+
+# Auto-refresh for live updates
+if st.session_state.ws_connected:
+    time.sleep(2)
     st.rerun()
 
-# Status
-if st.session_state.last_fetch:
-    st.success(f"Data loaded at {st.session_state.last_fetch.strftime('%H:%M:%S')}")
-    st.info(f"Tracking {len(st.session_state.data)} USDT pairs")
-else:
-    st.info("Click 'Get Live Data' to fetch from Binance API")
-
 # Results
-if st.session_state.data:
+if st.session_state.ticker_data:
     st.subheader("Profit Opportunities")
     st.text("~8% profit margin and <2% above low price")
     
@@ -102,4 +175,4 @@ if st.session_state.data:
         st.info("No opportunities match criteria")
 
 st.markdown("---")
-st.markdown("*Single API call - Maximum efficiency*")
+st.markdown("*WebSocket-only streaming - No REST calls*")
