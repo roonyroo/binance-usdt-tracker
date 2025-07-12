@@ -6,6 +6,7 @@ import asyncio
 import websockets
 import threading
 import time
+from contextlib import asynccontextmanager
 
 # Page config
 st.set_page_config(
@@ -14,12 +15,6 @@ st.set_page_config(
     layout="wide"
 )
 
-# Global variables
-ticker_data = {}
-ws_connected = False
-ws_thread = None
-stop_ws = False
-
 # Initialize session state
 if 'ticker_data' not in st.session_state:
     st.session_state.ticker_data = {}
@@ -27,73 +22,83 @@ if 'ws_connected' not in st.session_state:
     st.session_state.ws_connected = False
 if 'last_update' not in st.session_state:
     st.session_state.last_update = None
+if 'ws_stop_event' not in st.session_state:
+    st.session_state.ws_stop_event = threading.Event()
+
+@asynccontextmanager
+async def websocket_connection():
+    """Context manager for WebSocket connection"""
+    uri = "wss://stream.binance.com:9443/ws/!ticker@arr"
+    websocket = None
+    try:
+        websocket = await websockets.connect(uri)
+        st.session_state.ws_connected = True
+        yield websocket
+    except Exception as e:
+        st.session_state.ws_connected = False
+        raise
+    finally:
+        if websocket:
+            await websocket.close()
+        st.session_state.ws_connected = False
 
 def process_ticker_data(data):
     """Process incoming ticker data"""
-    global ticker_data
+    usdt_data = {}
     
     if isinstance(data, list):
         for item in data:
             if 's' in item and item['s'].endswith('USDT'):
-                ticker_data[item['s']] = {
-                    'current': float(item['c']),
-                    'high': float(item['h']),
-                    'low': float(item['l']),
-                    'change': float(item['P'])
-                }
+                try:
+                    usdt_data[item['s']] = {
+                        'current': float(item['c']),
+                        'high': float(item['h']),
+                        'low': float(item['l']),
+                        'change': float(item['P'])
+                    }
+                except (ValueError, KeyError):
+                    continue
     
     # Update session state
-    st.session_state.ticker_data = ticker_data.copy()
+    st.session_state.ticker_data = usdt_data
     st.session_state.last_update = datetime.now()
 
 async def websocket_client():
     """WebSocket client for Binance stream"""
-    global ws_connected, stop_ws
-    
-    uri = "wss://stream.binance.com:9443/ws/!ticker@arr"
-    
     try:
-        async with websockets.connect(uri) as websocket:
-            ws_connected = True
-            st.session_state.ws_connected = True
-            
-            while not stop_ws:
+        async with websocket_connection() as websocket:
+            while not st.session_state.ws_stop_event.is_set():
                 try:
                     message = await asyncio.wait_for(websocket.recv(), timeout=1.0)
                     data = json.loads(message)
                     process_ticker_data(data)
                 except asyncio.TimeoutError:
                     continue
+                except websockets.exceptions.ConnectionClosed:
+                    break
                 except Exception as e:
                     break
-                    
     except Exception as e:
         pass
-    finally:
-        ws_connected = False
-        st.session_state.ws_connected = False
 
 def start_websocket():
     """Start WebSocket connection"""
-    global ws_thread, stop_ws
-    
-    stop_ws = False
+    st.session_state.ws_stop_event.clear()
     
     def run_websocket():
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-        loop.run_until_complete(websocket_client())
-        loop.close()
+        try:
+            loop.run_until_complete(websocket_client())
+        finally:
+            loop.close()
     
-    ws_thread = threading.Thread(target=run_websocket)
-    ws_thread.daemon = True
-    ws_thread.start()
+    thread = threading.Thread(target=run_websocket, daemon=True)
+    thread.start()
 
 def stop_websocket():
     """Stop WebSocket connection"""
-    global stop_ws, ws_connected
-    stop_ws = True
-    ws_connected = False
+    st.session_state.ws_stop_event.set()
     st.session_state.ws_connected = False
 
 def calculate_opportunities():
@@ -130,10 +135,12 @@ def calculate_opportunities():
                     'Profit': f"{profit_percent:.1f}%"
                 })
         except (ZeroDivisionError, ValueError):
-            # Skip invalid data
             continue
     
-    return pd.DataFrame(opportunities).sort_values('Profit', key=lambda x: x.str.replace('%', '').astype(float), ascending=False)
+    if opportunities:
+        df = pd.DataFrame(opportunities)
+        return df.sort_values('Profit', key=lambda x: x.str.replace('%', '').astype(float), ascending=False)
+    return pd.DataFrame()
 
 # Main UI
 st.title("Binance USDT Tracker")
@@ -146,7 +153,7 @@ with col1:
     if st.button("Start WebSocket", type="primary"):
         start_websocket()
         st.success("WebSocket started!")
-        time.sleep(2)
+        time.sleep(1)
         st.rerun()
 
 with col2:
@@ -157,9 +164,9 @@ with col2:
 
 # Connection status
 if st.session_state.ws_connected:
-    st.success("Live data streaming")
+    st.success("🟢 Live data streaming")
 else:
-    st.error("WebSocket disconnected")
+    st.error("🔴 WebSocket disconnected")
 
 # Status display
 if st.session_state.last_update:
@@ -171,7 +178,7 @@ else:
 
 # Auto-refresh for live updates
 if st.session_state.ws_connected:
-    time.sleep(2)
+    time.sleep(1)
     st.rerun()
 
 # Results
@@ -187,4 +194,4 @@ if st.session_state.ticker_data:
         st.info("No opportunities match criteria")
 
 st.markdown("---")
-st.markdown("*WebSocket-only streaming - Error handling included*")
+st.markdown("*WebSocket-only streaming - Optimized performance*")
