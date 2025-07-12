@@ -2,6 +2,7 @@ import streamlit as st
 import requests
 import pandas as pd
 from datetime import datetime
+import json
 
 # Page config
 st.set_page_config(
@@ -16,10 +17,23 @@ if 'data' not in st.session_state:
 if 'last_fetch' not in st.session_state:
     st.session_state.last_fetch = None
 
+def test_binance_access():
+    """Test if Binance API is accessible from current region"""
+    try:
+        response = requests.get("https://api.binance.com/api/v3/ping", timeout=5)
+        return response.status_code == 200
+    except:
+        return False
+
 def fetch_data():
     """Fetch live data from Binance API"""
     try:
         with st.spinner("Fetching live Binance data..."):
+            # Test connectivity first
+            if not test_binance_access():
+                st.error("Binance API not accessible from this region")
+                return False
+            
             response = requests.get("https://api.binance.com/api/v3/ticker/24hr", timeout=10)
             response.raise_for_status()
             data = response.json()
@@ -38,6 +52,9 @@ def fetch_data():
             st.session_state.data = usdt_data
             st.session_state.last_fetch = datetime.now()
             return True
+    except requests.exceptions.RequestException as e:
+        st.error(f"API Error: {e}")
+        return False
     except Exception as e:
         st.error(f"Error fetching data: {e}")
         return False
@@ -70,8 +87,15 @@ def calculate_opportunities():
     return pd.DataFrame(opportunities).sort_values('Profit', key=lambda x: x.str.replace('%', '').astype(float), ascending=False)
 
 # Main UI
-st.title("Binance USDT Tracker")
-st.markdown("**Live cryptocurrency analysis with Railway deployment**")
+st.title("📊 Binance USDT Tracker")
+st.markdown("**Testing Railway US region deployment**")
+
+# API connectivity test
+if st.button("🔍 Test API Access"):
+    if test_binance_access():
+        st.success("✅ Binance API accessible from this region!")
+    else:
+        st.error("❌ Binance API blocked from this region")
 
 # Fetch button
 if st.button("🔄 Get Live Data", type="primary"):
@@ -87,7 +111,7 @@ else:
 
 # Results
 if st.session_state.data:
-    st.subheader("Profit Opportunities")
+    st.subheader("🎯 Profit Opportunities")
     st.text("Coins with ~8% profit margin and <2% above low price")
     
     df = calculate_opportunities()
@@ -102,4 +126,4 @@ else:
     st.info("No data loaded yet")
 
 st.markdown("---")
-st.markdown("*Railway deployment with live Binance API*")
+st.markdown("*Testing Railway US region deployment with live Binance API*")
