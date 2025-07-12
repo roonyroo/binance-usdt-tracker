@@ -1,0 +1,1 @@
+web: streamlit run binance_tracker.py --server.port $PORT --server.address 0.0.0.0
